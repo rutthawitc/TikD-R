@@ -23,10 +23,10 @@ For Windows cross-builds on macOS/Linux you can use `cross` or GitHub Actions. T
 ### Single URL
 
 ```bash
-cargo run -- https://www.tiktok.com/@ampxrx_cho/video/7408870041950686472
+cargo run -- https://vt.tiktok.com/ZSyB3RCuJ/
 ```
 
-The command above writes `ampxrx_cho/7408870041950686472.mp4` to the current working directory.
+The command above follows TikTok’s mobile shortlink and writes `frictionlesson/7551290370794016007.mp4` (or the resolved creator/video id pair) to the current working directory.
 
 ### Batch Mode
 
@@ -34,8 +34,8 @@ Place one URL per line in a text file and pass it with `--file`:
 
 ```
 # urls.txt
-https://www.tiktok.com/@frictionlesson/video/7551290370794016007
-https://vt.tiktok.com/ZSyBqR3Hu/
+https://vt.tiktok.com/ZSyB3RCuJ/
+https://www.tiktok.com/@another_creator/video/1234567890123456789
 ```
 
 ```bash
