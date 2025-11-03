@@ -1,0 +1,9 @@
+/target/
+/.idea/
+/.vscode/
+**/*.rs.bk
+*.mp4
+.DS_Store
+urls.txt
+TikD-R PRD.md
+TikD-R System Design.md
