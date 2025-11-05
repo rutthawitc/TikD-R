@@ -22,6 +22,13 @@
    - URL parsing errors include context (line number, segment type)
    - Total segment count logged on success
 
+5. **CRITICAL: Binary Video Misinterpretation** ✅ FIXED
+   - **Root cause identified**: TikTok sometimes returns direct MP4 video files at the `play_url`, not HLS playlists
+   - **Previous behavior**: Code tried to parse binary MP4 data as text playlists, creating malformed URLs with binary garbage
+   - **Error symptom**: `builder error for url (https://...ftypisom...moov...)` with binary MP4 atoms in the URL
+   - **Fix**: Detect Content-Type and MP4 signatures, download as binary when appropriate
+   - **Validation**: Check for `#EXTM3U` header before treating content as HLS playlist
+
 ### Testing Recommendations:
 
 To test with the problematic URL (https://vt.tiktok.com/ZSyBK5V4o/):
@@ -33,8 +40,10 @@ RUST_LOG=tikd_r=debug cargo run -- https://vt.tiktok.com/ZSyBK5V4o/
 
 The debug output will now show:
 - Whether download_url or play_url is being used
-- Playlist type (master vs media)
-- Variant selection (if master)
+- Content-Type detection (video/* vs text/plain)
+- Whether it's a direct download or HLS stream
+- Playlist type (master vs media) if HLS
+- Variant selection if master playlist
 - Each segment being downloaded
 - Exact error location if it fails
 
