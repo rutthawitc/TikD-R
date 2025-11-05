@@ -581,10 +581,28 @@ fn build_output_path(descriptor: &VideoDescriptor) -> Result<PathBuf> {
 }
 
 fn sanitize_component(input: &str) -> String {
-    input
+    // Filter out characters that are problematic on any filesystem
+    // Also filters Windows-reserved characters: < > : " / \ | ? *
+    let sanitized: String = input
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        .collect()
+        .collect();
+
+    // Handle Windows-reserved filenames (case-insensitive)
+    // CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9
+    let windows_reserved = [
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+
+    let lowercase = sanitized.to_lowercase();
+    if windows_reserved.contains(&lowercase.as_str()) {
+        // Prefix with underscore to make it safe
+        return format!("_{}", sanitized);
+    }
+
+    sanitized
 }
 
 fn should_retry(err: &Error) -> bool {
@@ -623,6 +641,41 @@ mod tests {
     fn sanitize_preserves_alphanumeric() {
         let id = "abc123-_./!@";
         assert_eq!(sanitize_component(id), "abc123-_.");
+    }
+
+    #[test]
+    fn sanitize_filters_windows_reserved_characters() {
+        // Test that Windows-reserved characters are filtered out
+        assert_eq!(sanitize_component("video<test>"), "videotest");
+        assert_eq!(sanitize_component("file|pipe"), "filepipe");
+        assert_eq!(sanitize_component("path\\test"), "pathtest");
+        assert_eq!(sanitize_component("file:name"), "filename");
+        assert_eq!(sanitize_component("question?mark"), "questionmark");
+        assert_eq!(sanitize_component("aster*isk"), "asterisk");
+        assert_eq!(sanitize_component("quo\"te"), "quote");
+    }
+
+    #[test]
+    fn sanitize_handles_windows_reserved_filenames() {
+        // Test Windows reserved filenames (case-insensitive)
+        assert_eq!(sanitize_component("con"), "_con");
+        assert_eq!(sanitize_component("CON"), "_CON");
+        assert_eq!(sanitize_component("Con"), "_Con");
+        assert_eq!(sanitize_component("prn"), "_prn");
+        assert_eq!(sanitize_component("aux"), "_aux");
+        assert_eq!(sanitize_component("nul"), "_nul");
+        assert_eq!(sanitize_component("com1"), "_com1");
+        assert_eq!(sanitize_component("COM5"), "_COM5");
+        assert_eq!(sanitize_component("lpt1"), "_lpt1");
+        assert_eq!(sanitize_component("LPT9"), "_LPT9");
+    }
+
+    #[test]
+    fn sanitize_allows_safe_filenames() {
+        // Test that safe filenames pass through unchanged
+        assert_eq!(sanitize_component("normal-file.name_123"), "normal-file.name_123");
+        assert_eq!(sanitize_component("video123"), "video123");
+        assert_eq!(sanitize_component("user.name"), "user.name");
     }
 
     #[test]
