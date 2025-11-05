@@ -17,6 +17,8 @@ pub enum Error {
     VideoUrlNotFound,
     #[error("Download summary: {succeeded} succeeded, {failed} failed.")]
     DownloadSummary { succeeded: usize, failed: usize },
+    #[error("Unsupported stream configuration: {0}")]
+    UnsupportedStream(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

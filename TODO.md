@@ -1,0 +1,1 @@
+- Investigate why HLS fallback still fails for URLs like https://vt.tiktok.com/ZSyBK5V4o/ and ensure streaming captures correctly. (feature-hls-fallback)

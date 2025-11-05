@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
@@ -11,6 +11,7 @@ use tokio::{
 
 use crate::error::{Error, Result};
 use crate::scraper::{Scraper, VideoDescriptor};
+use url::Url;
 
 const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -180,22 +181,243 @@ impl Downloader {
             tokio::fs::create_dir_all(parent).await?;
         }
 
+        let download_url = descriptor.download_url.clone();
+        let play_url = descriptor.play_url.clone();
+
+        if let Some(url) = download_url {
+            match self.download_binary(&url, share_url, &output_path).await {
+                Ok(()) => return Ok(output_path),
+                Err(err) => {
+                    if let Some(ref fallback_url) = play_url {
+                        if should_try_hls_fallback(&err) {
+                            self.download_hls_stream(fallback_url, share_url, &output_path)
+                                .await?;
+                            return Ok(output_path);
+                        }
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        if let Some(url) = play_url {
+            self.download_hls_stream(&url, share_url, &output_path)
+                .await?;
+            return Ok(output_path);
+        }
+
+        Err(Error::VideoUrlNotFound)
+    }
+
+    async fn download_binary(&self, url: &str, share_url: &str, output_path: &Path) -> Result<()> {
         let mut response = self
             .client
-            .get(&descriptor.download_url)
+            .get(url)
             .header(reqwest::header::REFERER, share_url)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
 
-        let mut file = tokio::fs::File::create(&output_path).await?;
+        if let Err(err) = response.error_for_status_ref() {
+            return Err(Error::Network(err));
+        }
+
+        let mut file = tokio::fs::File::create(output_path).await?;
 
         while let Some(chunk) = response.chunk().await? {
             file.write_all(&chunk).await?;
         }
         file.flush().await?;
 
-        Ok(output_path)
+        Ok(())
+    }
+
+    async fn download_hls_stream(
+        &self,
+        play_url: &str,
+        share_url: &str,
+        output_path: &Path,
+    ) -> Result<()> {
+        let mut playlist_url =
+            Url::parse(play_url).map_err(|_| Error::InvalidUrl(play_url.to_string()))?;
+
+        let mut playlist_body = self.fetch_playlist(&playlist_url, share_url).await?;
+
+        if is_master_playlist(&playlist_body) {
+            let variant_url = select_best_variant(&playlist_body, &playlist_url)
+                .ok_or(Error::VideoUrlNotFound)?;
+            playlist_body = self.fetch_playlist(&variant_url, share_url).await?;
+            playlist_url = variant_url;
+        }
+
+        self.persist_media_playlist(&playlist_body, &playlist_url, share_url, output_path)
+            .await
+    }
+
+    async fn fetch_playlist(&self, url: &Url, share_url: &str) -> Result<String> {
+        let response = self
+            .client
+            .get(url.clone())
+            .header(reqwest::header::REFERER, share_url)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(response.text().await?)
+    }
+
+    async fn persist_media_playlist(
+        &self,
+        playlist_body: &str,
+        playlist_url: &Url,
+        share_url: &str,
+        output_path: &Path,
+    ) -> Result<()> {
+        let mut file = tokio::fs::File::create(output_path).await?;
+        let mut had_segment = false;
+
+        for line in playlist_body.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if trimmed.starts_with("#EXT-X-KEY") {
+                let method =
+                    extract_attribute(trimmed, "METHOD").unwrap_or_else(|| "NONE".to_string());
+                if method != "NONE" {
+                    return Err(Error::UnsupportedStream(format!(
+                        "HLS encryption method {method} is not supported"
+                    )));
+                }
+                continue;
+            }
+
+            if trimmed.starts_with("#EXT-X-MAP") {
+                if let Some(uri) = extract_attribute(trimmed, "URI") {
+                    let init_url = playlist_url
+                        .join(&uri)
+                        .map_err(|_| Error::InvalidUrl(uri.clone()))?;
+                    self.write_segment(&init_url, share_url, &mut file).await?;
+                }
+                continue;
+            }
+
+            if trimmed.starts_with('#') {
+                continue;
+            }
+
+            let segment_url = playlist_url
+                .join(trimmed)
+                .map_err(|_| Error::InvalidUrl(trimmed.to_string()))?;
+            self.write_segment(&segment_url, share_url, &mut file)
+                .await?;
+            had_segment = true;
+        }
+
+        if !had_segment {
+            return Err(Error::VideoUrlNotFound);
+        }
+
+        file.flush().await?;
+        Ok(())
+    }
+
+    async fn write_segment(
+        &self,
+        segment_url: &Url,
+        share_url: &str,
+        file: &mut tokio::fs::File,
+    ) -> Result<()> {
+        let mut response = self
+            .client
+            .get(segment_url.clone())
+            .header(reqwest::header::REFERER, share_url)
+            .send()
+            .await?;
+
+        if let Err(err) = response.error_for_status_ref() {
+            return Err(Error::Network(err));
+        }
+
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+
+        Ok(())
+    }
+}
+
+fn should_try_hls_fallback(err: &Error) -> bool {
+    match err {
+        Error::Network(inner) => {
+            inner.status().map_or(false, |status| {
+                matches!(
+                    status,
+                    StatusCode::FORBIDDEN
+                        | StatusCode::UNAUTHORIZED
+                        | StatusCode::NOT_FOUND
+                        | StatusCode::GONE
+                        | StatusCode::LOCKED
+                        | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS
+                )
+            }) || inner.is_builder()
+        }
+        _ => false,
+    }
+}
+
+fn is_master_playlist(playlist: &str) -> bool {
+    playlist
+        .lines()
+        .any(|line| line.trim_start().starts_with("#EXT-X-STREAM-INF"))
+}
+
+fn select_best_variant(playlist: &str, base_url: &Url) -> Option<Url> {
+    let mut best: Option<(u64, Url)> = None;
+    let mut lines = playlist.lines();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("#EXT-X-STREAM-INF") {
+            continue;
+        }
+
+        let bandwidth = extract_attribute(trimmed, "BANDWIDTH")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        let uri_line = lines.next()?.trim();
+        if uri_line.is_empty() {
+            continue;
+        }
+
+        if let Ok(candidate_url) = base_url.join(uri_line) {
+            match &mut best {
+                Some((best_bw, _)) if bandwidth <= *best_bw => {}
+                _ => best = Some((bandwidth, candidate_url)),
+            }
+        }
+    }
+
+    best.map(|(_, url)| url)
+}
+
+fn extract_attribute(line: &str, attribute: &str) -> Option<String> {
+    let needle = format!("{attribute}=");
+    let start = line.find(&needle)? + needle.len();
+    let remainder = &line[start..];
+
+    if remainder.starts_with('"') {
+        let remainder = &remainder[1..];
+        let end = remainder.find('"')?;
+        Some(remainder[..end].to_string())
+    } else {
+        let end = remainder
+            .find(',')
+            .or_else(|| remainder.find(' '))
+            .unwrap_or(remainder.len());
+        Some(remainder[..end].to_string())
     }
 }
 
@@ -245,6 +467,7 @@ fn should_retry(err: &Error) -> bool {
         Error::EmptyUrlFile(_) => false,
         Error::VideoUrlNotFound => false,
         Error::DownloadSummary { .. } => false,
+        Error::UnsupportedStream(_) => false,
     }
 }
 
@@ -263,7 +486,8 @@ mod tests {
     fn build_output_path_sanitizes_components() {
         let descriptor = VideoDescriptor {
             video_id: "video!@#".into(),
-            download_url: "https://example.com".into(),
+            download_url: Some("https://example.com".into()),
+            play_url: None,
             author: "@user name".into(),
         };
 
@@ -287,5 +511,20 @@ mod tests {
             assert_eq!(reports.len(), 2);
             assert!(reports.iter().all(|r| r.result.is_err()));
         });
+    }
+
+    #[test]
+    fn extract_attribute_parses_quoted_values() {
+        let line = r#"#EXT-X-MAP:URI="init.mp4""#;
+        assert_eq!(extract_attribute(line, "URI"), Some("init.mp4".to_string()));
+    }
+
+    #[test]
+    fn extract_attribute_parses_unquoted_values() {
+        let line = "#EXT-X-KEY:METHOD=AES-128,URI=\"enc.key\"";
+        assert_eq!(
+            extract_attribute(line, "METHOD"),
+            Some("AES-128".to_string())
+        );
     }
 }

@@ -23,7 +23,12 @@ async fn resolves_descriptor_from_live_url() {
         .expect("resolve live descriptor");
 
     assert!(!descriptor.video_id.is_empty());
-    assert!(descriptor.download_url.starts_with("http"));
+    assert!(descriptor
+        .download_url
+        .as_deref()
+        .or(descriptor.play_url.as_deref())
+        .map(|url| url.starts_with("http"))
+        .unwrap_or(false));
 
     if let Ok(expected) = std::env::var("TIKD_R_EXPECT_VIDEO_ID") {
         assert_eq!(descriptor.video_id, expected);
