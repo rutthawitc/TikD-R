@@ -282,12 +282,10 @@ impl Downloader {
         if content_type.contains("video/") || content_type.contains("application/octet-stream") {
             tracing::info!("Detected direct video download (not HLS), downloading binary content");
             let mut file = tokio::fs::File::create(output_path).await?;
-            let mut stream = response.bytes_stream();
-            use futures::StreamExt;
 
             let mut total_bytes = 0;
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk?;
+            let mut response = response;
+            while let Some(chunk) = response.chunk().await? {
                 total_bytes += chunk.len();
                 file.write_all(&chunk).await?;
             }
