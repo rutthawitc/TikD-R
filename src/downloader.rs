@@ -260,16 +260,71 @@ impl Downloader {
         let mut playlist_url =
             Url::parse(play_url).map_err(|_| Error::InvalidUrl(play_url.to_string()))?;
 
-        tracing::debug!("Fetching playlist from: {}", playlist_url);
-        let mut playlist_body = self.fetch_playlist(&playlist_url, share_url).await?;
+        tracing::debug!("Fetching content from: {}", playlist_url);
+        let response = self
+            .client
+            .get(playlist_url.clone())
+            .header(reqwest::header::REFERER, share_url)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        // Check if this is actually a video file, not a playlist
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        tracing::debug!("Content-Type: {}", content_type);
+
+        // If it's a direct video file, download it directly
+        if content_type.contains("video/") || content_type.contains("application/octet-stream") {
+            tracing::info!("Detected direct video download (not HLS), downloading binary content");
+            let mut file = tokio::fs::File::create(output_path).await?;
+
+            let mut total_bytes = 0;
+            let mut response = response;
+            while let Some(chunk) = response.chunk().await? {
+                total_bytes += chunk.len();
+                file.write_all(&chunk).await?;
+            }
+            file.flush().await?;
+            tracing::info!("Downloaded {} bytes as direct video file", total_bytes);
+            return Ok(());
+        }
+
+        // Otherwise, treat as HLS playlist
+        let mut playlist_body = response.text().await?;
         tracing::debug!("Playlist size: {} bytes", playlist_body.len());
+
+        // Sanity check: ensure it looks like a playlist
+        if !playlist_body.trim_start().starts_with("#EXTM3U") {
+            tracing::warn!("Content doesn't start with #EXTM3U, may not be valid HLS playlist");
+            // Try to detect if it's binary data being misinterpreted
+            if playlist_body.starts_with("ftyp") || playlist_body.as_bytes().starts_with(&[0x00, 0x00, 0x00]) {
+                tracing::error!("Detected binary video data instead of playlist text");
+                return Err(Error::UnsupportedStream(
+                    "Received binary video data when expecting HLS playlist".to_string()
+                ));
+            }
+        }
 
         if is_master_playlist(&playlist_body) {
             tracing::debug!("Detected master playlist, selecting variant");
             let variant_url = select_best_variant(&playlist_body, &playlist_url)
                 .ok_or(Error::VideoUrlNotFound)?;
             tracing::debug!("Selected variant: {}", variant_url);
-            playlist_body = self.fetch_playlist(&variant_url, share_url).await?;
+
+            let response = self
+                .client
+                .get(variant_url.clone())
+                .header(reqwest::header::REFERER, share_url)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            playlist_body = response.text().await?;
             playlist_url = variant_url;
             tracing::debug!("Variant playlist size: {} bytes", playlist_body.len());
         } else {
@@ -278,18 +333,6 @@ impl Downloader {
 
         self.persist_media_playlist(&playlist_body, &playlist_url, share_url, output_path)
             .await
-    }
-
-    async fn fetch_playlist(&self, url: &Url, share_url: &str) -> Result<String> {
-        let response = self
-            .client
-            .get(url.clone())
-            .header(reqwest::header::REFERER, share_url)
-            .send()
-            .await?
-            .error_for_status()?;
-
-        Ok(response.text().await?)
     }
 
     async fn persist_media_playlist(
