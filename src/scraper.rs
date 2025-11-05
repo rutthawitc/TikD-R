@@ -12,7 +12,8 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone)]
 pub struct VideoDescriptor {
     pub video_id: String,
-    pub download_url: String,
+    pub download_url: Option<String>,
+    pub play_url: Option<String>,
     pub author: String,
 }
 
@@ -52,7 +53,12 @@ fn parse_share_page(html: &str, share_url: &str) -> Option<VideoDescriptor> {
         .or_else(|| parse_sigi_state(&document, share_url))
         .or_else(|| parse_next_data(&document, share_url))
         .map(|mut descriptor| {
-            descriptor.download_url = descriptor.download_url.replace("\\u0026", "&");
+            if let Some(ref mut url) = descriptor.download_url {
+                *url = url.replace("\\u0026", "&");
+            }
+            if let Some(ref mut url) = descriptor.play_url {
+                *url = url.replace("\\u0026", "&");
+            }
             descriptor
         })
 }
@@ -136,12 +142,17 @@ fn build_descriptor_from_value(value: &Value, share_url: &str) -> Option<VideoDe
         .get("downloadAddr")
         .and_then(Value::as_str)
         .map(|s| s.to_string())
-        .or_else(|| {
-            video
-                .get("playAddr")
-                .and_then(Value::as_str)
-                .map(|s| s.to_string())
-        })?;
+        .filter(|s| !s.is_empty());
+
+    let play_url = video
+        .get("playAddr")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
+    if download_url.is_none() && play_url.is_none() {
+        return None;
+    }
 
     let author = value
         .get("author")
@@ -154,6 +165,7 @@ fn build_descriptor_from_value(value: &Value, share_url: &str) -> Option<VideoDe
     Some(VideoDescriptor {
         video_id,
         download_url,
+        play_url,
         author,
     })
 }
@@ -161,10 +173,13 @@ fn build_descriptor_from_value(value: &Value, share_url: &str) -> Option<VideoDe
 fn build_descriptor_from_item(item: ItemStruct, share_url: &str) -> Option<VideoDescriptor> {
     let video = item.video?;
 
-    let download_url = video
-        .download_addr
-        .or(video.play_addr)
-        .filter(|s| !s.is_empty())?;
+    let download_url = video.download_addr.filter(|s| !s.is_empty());
+
+    let play_url = video.play_addr.filter(|s| !s.is_empty());
+
+    if download_url.is_none() && play_url.is_none() {
+        return None;
+    }
 
     let author = item
         .author
@@ -175,6 +190,7 @@ fn build_descriptor_from_item(item: ItemStruct, share_url: &str) -> Option<Video
     Some(VideoDescriptor {
         video_id: item.id?,
         download_url,
+        play_url,
         author,
     })
 }
@@ -275,7 +291,11 @@ mod tests {
         assert!(descriptor.is_some());
         let descriptor = descriptor.unwrap();
         assert_eq!(descriptor.video_id, "1234567890");
-        assert!(descriptor.download_url.contains("example.com"));
+        assert!(descriptor
+            .download_url
+            .as_deref()
+            .unwrap()
+            .contains("example.com"));
         assert_eq!(descriptor.author, "sigi_author");
     }
 
@@ -288,7 +308,11 @@ mod tests {
         assert!(descriptor.is_some());
         let descriptor = descriptor.unwrap();
         assert_eq!(descriptor.video_id, "9876543210");
-        assert!(descriptor.download_url.contains("example.com"));
+        assert!(descriptor
+            .download_url
+            .as_deref()
+            .unwrap()
+            .contains("example.com"));
         assert_eq!(descriptor.author, "sample_author");
     }
 
