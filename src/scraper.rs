@@ -40,9 +40,10 @@ impl Scraper {
             .send()
             .await?
             .error_for_status()?;
+        let final_url = response.url().to_string();
         let html = response.text().await?;
 
-        parse_share_page(&html, share_url).ok_or(Error::VideoUrlNotFound)
+        parse_share_page(&html, &final_url).ok_or(Error::VideoUrlNotFound)
     }
 }
 
