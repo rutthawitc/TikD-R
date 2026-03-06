@@ -121,12 +121,15 @@ impl Downloader {
     }
 
     /// Download all share URLs, returning per-URL outcomes.
+    /// Progress is printed to stderr as each download completes.
     pub async fn download_all(&self, urls: &[String]) -> Vec<DownloadReport> {
         if urls.is_empty() {
             return Vec::new();
         }
 
-        let mut results: Vec<(usize, DownloadReport)> = Vec::with_capacity(urls.len());
+        let total = urls.len();
+        let mut results: Vec<(usize, DownloadReport)> = Vec::with_capacity(total);
+        let mut completed = 0usize;
 
         let tasks = stream::iter(urls.iter().cloned().enumerate().map(|(idx, url)| {
             let downloader = self.clone();
@@ -143,6 +146,11 @@ impl Downloader {
 
         futures::pin_mut!(tasks);
         while let Some((idx, report)) = tasks.next().await {
+            completed += 1;
+            if total > 1 {
+                let status = if report.is_success() { "ok" } else { "FAILED" };
+                eprintln!("[{}/{}] {} ... {}", completed, total, report.url, status);
+            }
             results.push((idx, report));
         }
 
@@ -184,6 +192,15 @@ impl Downloader {
         );
 
         let output_path = build_output_path(&descriptor)?;
+
+        // Skip if file already exists and has content
+        if let Ok(meta) = tokio::fs::metadata(&output_path).await {
+            if meta.len() > 0 {
+                tracing::info!("Skipping already downloaded: {}", output_path.display());
+                return Ok(output_path);
+            }
+        }
+
         if let Some(parent) = output_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -432,6 +449,37 @@ impl Downloader {
         share_url: &str,
         file: &mut tokio::fs::File,
     ) -> Result<()> {
+        let max_segment_retries = self.config.max_retries;
+        let mut attempt = 0;
+
+        loop {
+            match self.fetch_segment(segment_url, share_url, file).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    attempt += 1;
+                    if attempt > max_segment_retries || !should_retry(&err) {
+                        return Err(err);
+                    }
+                    let backoff_ms = self
+                        .config
+                        .initial_backoff_ms
+                        .saturating_mul(1u64 << (attempt.saturating_sub(1)));
+                    tracing::warn!(
+                        "Segment retry {}/{} after {}ms: {}",
+                        attempt, max_segment_retries, backoff_ms, err
+                    );
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        }
+    }
+
+    async fn fetch_segment(
+        &self,
+        segment_url: &Url,
+        share_url: &str,
+        file: &mut tokio::fs::File,
+    ) -> Result<()> {
         let mut response = self
             .client
             .get(segment_url.clone())
@@ -601,6 +649,9 @@ fn sanitize_component(input: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .collect();
 
+    // Strip leading/trailing dots (problematic on Windows and hidden on Unix)
+    let sanitized = sanitized.trim_matches('.').to_string();
+
     // Handle Windows-reserved filenames (case-insensitive)
     // CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9
     let windows_reserved = [
@@ -611,7 +662,6 @@ fn sanitize_component(input: &str) -> String {
 
     let lowercase = sanitized.to_lowercase();
     if windows_reserved.contains(&lowercase.as_str()) {
-        // Prefix with underscore to make it safe
         return format!("_{}", sanitized);
     }
 
@@ -653,7 +703,7 @@ mod tests {
     #[test]
     fn sanitize_preserves_alphanumeric() {
         let id = "abc123-_./!@";
-        assert_eq!(sanitize_component(id), "abc123-_.");
+        assert_eq!(sanitize_component(id), "abc123-_");
     }
 
     #[test]
@@ -681,6 +731,14 @@ mod tests {
         assert_eq!(sanitize_component("COM5"), "_COM5");
         assert_eq!(sanitize_component("lpt1"), "_lpt1");
         assert_eq!(sanitize_component("LPT9"), "_LPT9");
+    }
+
+    #[test]
+    fn sanitize_strips_leading_trailing_dots() {
+        assert_eq!(sanitize_component(".hidden"), "hidden");
+        assert_eq!(sanitize_component("file."), "file");
+        assert_eq!(sanitize_component("...dots..."), "dots");
+        assert_eq!(sanitize_component("."), "");
     }
 
     #[test]
