@@ -249,7 +249,7 @@ mod tests {
 For testing with real TikTok URLs (optional):
 ```bash
 # Set test URL in environment
-export TIKD_TEST_URL="https://vt.tiktok.com/..."
+export TIKD_R_LIVE_URL="https://vt.tiktok.com/..."
 
 # Run with live-tests feature
 cargo test --features live-tests

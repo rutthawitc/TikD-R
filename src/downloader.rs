@@ -240,6 +240,19 @@ impl Downloader {
             return Err(Error::Network(err));
         }
 
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if content_type.contains("text/html") {
+            tracing::warn!("Received HTML instead of video from: {}", url);
+            return Err(Error::UnsupportedStream(
+                "Server returned HTML instead of video content".to_string(),
+            ));
+        }
+
         let mut file = tokio::fs::File::create(output_path).await?;
 
         while let Some(chunk) = response.chunk().await? {

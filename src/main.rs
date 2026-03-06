@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 
 use clap::Parser;
@@ -68,18 +69,19 @@ fn gather_urls(cli: &Cli) -> Result<Vec<String>> {
 
     if let Some(path) = cli.file.as_ref() {
         let contents = fs::read_to_string(path)?;
-        let mut urls: Vec<String> = contents
+        let mut seen = HashSet::new();
+        let urls: Vec<String> = contents
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(ToOwned::to_owned)
+            .filter(|url| seen.insert(url.clone()))
             .collect();
 
         if urls.is_empty() {
             return Err(Error::EmptyUrlFile(path.clone()));
         }
 
-        urls.dedup();
         return Ok(urls);
     }
 
@@ -122,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn deduplicate_urls_from_file() {
+    fn deduplicate_adjacent_urls_from_file() {
         let temp = tempfile::NamedTempFile::new().unwrap();
         fs::write(temp.path(), "https://a\nhttps://a\n").unwrap();
 
@@ -136,6 +138,23 @@ mod tests {
 
         let urls = gather_urls(&cli).unwrap();
         assert_eq!(urls, vec!["https://a"]);
+    }
+
+    #[test]
+    fn deduplicate_non_adjacent_urls_from_file() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), "https://a\nhttps://b\nhttps://a\n").unwrap();
+
+        let cli = Cli {
+            url: None,
+            file: Some(temp.path().to_path_buf()),
+            max_concurrent: None,
+            max_retries: None,
+            backoff_ms: None,
+        };
+
+        let urls = gather_urls(&cli).unwrap();
+        assert_eq!(urls, vec!["https://a", "https://b"]);
     }
 
     #[test]

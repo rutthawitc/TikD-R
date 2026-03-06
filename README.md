@@ -238,7 +238,7 @@ cargo build --release
 # Run all tests
 cargo test
 
-# Run with live integration tests (requires TIKD_TEST_URL environment variable)
+# Run with live integration tests (requires TIKD_R_LIVE_URL environment variable)
 cargo test --features live-tests
 ```
 
@@ -292,7 +292,8 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
 ### Live Testing
 - Integration tests are gated behind the `live-tests` feature flag
-- Set `TIKD_TEST_URL` environment variable to test with a real TikTok URL
+- Set `TIKD_R_LIVE_URL` environment variable to test with a real TikTok URL
+- Optionally set `TIKD_R_EXPECT_VIDEO_ID` to assert the expected video ID
 - Avoids publishing test URLs in the public repository
 
 ## Troubleshooting
