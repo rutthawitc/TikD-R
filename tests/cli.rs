@@ -10,6 +10,7 @@ fn cli_requires_either_url_or_file() {
         max_concurrent: None,
         max_retries: None,
         backoff_ms: None,
+        output_dir: None,
     };
 
     assert!(cli.validate().is_err());
@@ -23,6 +24,7 @@ fn cli_rejects_conflicting_inputs() {
         max_concurrent: None,
         max_retries: None,
         backoff_ms: None,
+        output_dir: None,
     };
 
     assert!(cli.validate().is_err());
@@ -36,6 +38,7 @@ fn cli_accepts_single_url() {
         max_concurrent: None,
         max_retries: None,
         backoff_ms: None,
+        output_dir: None,
     };
 
     assert!(cli.validate().is_ok());

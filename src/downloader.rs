@@ -15,13 +15,14 @@ use url::Url;
 
 const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) \
-     Chrome/124.0.0.0 Safari/537.36";
+     Chrome/131.0.0.0 Safari/537.36";
 
 #[derive(Clone, Debug)]
 pub struct DownloadConfig {
     pub max_retries: usize,
     pub initial_backoff_ms: u64,
     pub max_concurrent_downloads: usize,
+    pub output_dir: Option<PathBuf>,
 }
 
 impl Default for DownloadConfig {
@@ -30,6 +31,7 @@ impl Default for DownloadConfig {
             max_retries: 3,
             initial_backoff_ms: 500,
             max_concurrent_downloads: 4,
+            output_dir: None,
         }
     }
 }
@@ -191,7 +193,7 @@ impl Downloader {
             descriptor.play_url.is_some()
         );
 
-        let output_path = build_output_path(&descriptor)?;
+        let output_path = build_output_path(&descriptor, self.config.output_dir.as_deref())?;
 
         // Skip if file already exists and has content
         if let Ok(meta) = tokio::fs::metadata(&output_path).await {
@@ -520,7 +522,7 @@ fn resolve_segment_url(playlist_url: &Url, segment_path: &str) -> Result<Url> {
 fn should_try_hls_fallback(err: &Error) -> bool {
     match err {
         Error::Network(inner) => {
-            inner.status().map_or(false, |status| {
+            inner.status().is_some_and(|status| {
                 matches!(
                     status,
                     StatusCode::FORBIDDEN
@@ -612,8 +614,7 @@ fn extract_attribute(line: &str, attribute: &str) -> Option<String> {
     let start = line.find(&needle)? + needle.len();
     let remainder = &line[start..];
 
-    if remainder.starts_with('"') {
-        let remainder = &remainder[1..];
+    if let Some(remainder) = remainder.strip_prefix('"') {
         let end = remainder.find('"')?;
         Some(remainder[..end].to_string())
     } else {
@@ -625,7 +626,7 @@ fn extract_attribute(line: &str, attribute: &str) -> Option<String> {
     }
 }
 
-fn build_output_path(descriptor: &VideoDescriptor) -> Result<PathBuf> {
+fn build_output_path(descriptor: &VideoDescriptor, output_dir: Option<&Path>) -> Result<PathBuf> {
     let video = sanitize_component(&descriptor.video_id);
     if video.is_empty() {
         return Err(Error::InvalidUrl("missing video id".into()));
@@ -638,7 +639,11 @@ fn build_output_path(descriptor: &VideoDescriptor) -> Result<PathBuf> {
         author
     };
 
-    Ok(PathBuf::from(author_dir).join(format!("{video}.mp4")))
+    let relative = PathBuf::from(author_dir).join(format!("{video}.mp4"));
+    match output_dir {
+        Some(dir) => Ok(dir.join(relative)),
+        None => Ok(relative),
+    }
 }
 
 fn sanitize_component(input: &str) -> String {
@@ -758,8 +763,21 @@ mod tests {
             author: "@user name".into(),
         };
 
-        let path = build_output_path(&descriptor).unwrap();
+        let path = build_output_path(&descriptor, None).unwrap();
         assert_eq!(path, PathBuf::from("username/video.mp4"));
+    }
+
+    #[test]
+    fn build_output_path_with_output_dir() {
+        let descriptor = VideoDescriptor {
+            video_id: "123".into(),
+            download_url: Some("https://example.com".into()),
+            play_url: None,
+            author: "user".into(),
+        };
+
+        let path = build_output_path(&descriptor, Some(Path::new("/tmp/videos"))).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/videos/user/123.mp4"));
     }
 
     #[test]

@@ -32,6 +32,7 @@ async fn run() -> Result<()> {
     if let Some(backoff) = cli.backoff_ms {
         config.initial_backoff_ms = backoff.max(1);
     }
+    config.output_dir = cli.output_dir.clone();
 
     let downloader = Downloader::with_config(config)?;
 
@@ -56,7 +57,7 @@ async fn run() -> Result<()> {
     println!("Summary: {succeeded} succeeded, {failed} failed.");
 
     if failed > 0 {
-        return Err(Error::DownloadSummary { succeeded, failed });
+        std::process::exit(1);
     }
 
     Ok(())
@@ -100,6 +101,7 @@ mod tests {
             max_concurrent: None,
             max_retries: None,
             backoff_ms: None,
+            output_dir: None,
         };
 
         let urls = gather_urls(&cli).unwrap();
@@ -117,6 +119,7 @@ mod tests {
             max_concurrent: None,
             max_retries: None,
             backoff_ms: None,
+            output_dir: None,
         };
 
         let urls = gather_urls(&cli).unwrap();
@@ -134,6 +137,7 @@ mod tests {
             max_concurrent: None,
             max_retries: None,
             backoff_ms: None,
+            output_dir: None,
         };
 
         let urls = gather_urls(&cli).unwrap();
@@ -151,6 +155,7 @@ mod tests {
             max_concurrent: None,
             max_retries: None,
             backoff_ms: None,
+            output_dir: None,
         };
 
         let urls = gather_urls(&cli).unwrap();
@@ -167,6 +172,7 @@ mod tests {
             max_concurrent: None,
             max_retries: None,
             backoff_ms: None,
+            output_dir: None,
         };
 
         let err = gather_urls(&cli).unwrap_err();

@@ -33,6 +33,10 @@ pub struct Cli {
     /// Initial backoff delay in milliseconds for retry scheduling.
     #[arg(long, value_name = "MILLISECONDS", value_parser = clap::value_parser!(u64))]
     pub backoff_ms: Option<u64>,
+
+    /// Output directory for downloaded videos (default: current directory).
+    #[arg(short, long, value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
 }
 
 impl Cli {
